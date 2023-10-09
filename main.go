@@ -64,7 +64,7 @@ func main() {
 		}
 
 		// Insert the URL into the `urls` table
-		_, err = db.Exec("INSERT INTO urls (link) VALUES ($1)", requestBody.URL)
+		_, err = db.Exec("INSERT INTO test (link) VALUES ($1)", requestBody.URL)
 		if err != nil {
 			c.JSON(500, gin.H{
 				"error": "Failed to insert URL into the database",

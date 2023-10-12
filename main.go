@@ -1,16 +1,26 @@
 package main
 
 import (
-	"fmt"
+	"errors"
+	"log"
+	"net/http"
 	"os"
+	"strings"
 
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq" // PostgreSQL driver
+	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
+
+const userKey = "user"
 
 var Router *gin.Engine
 var db *sqlx.DB
+
+var secret = []byte(os.Getenv("SESSION_SECRET"))
 
 func main() {
 	// Get environment variables
@@ -23,59 +33,197 @@ func main() {
 		panic(err)
 	}
 
-	r := gin.Default()
+	r := engine()
+	r.Use(gin.Logger())
+	if err := r.Run(); err != nil {
+		log.Fatal("Unable to start:", err)
+	}
+}
 
-	r.GET("/", func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"message": "Hello world!",
-		})
+func engine() *gin.Engine {
+	r := gin.New()
+
+	// Setup the cookie store for session management
+	store := cookie.NewStore(secret)
+	r.Use(sessions.Sessions("mysession", store))
+
+	// Login and logout routes
+	r.POST("/login", login)
+	r.GET("/logout", logout)
+
+	// Private group, require authentication to access
+	private := r.Group("/private")
+	private.Use(AuthRequired)
+	{
+		private.GET("/me", me)
+		private.GET("/status", status)
+		//private.GET("/feeds", getFeeds)
+		private.POST("/feeds", addFeed)
+	}
+
+	return r
+}
+
+// AuthRequired is a simple middleware to check the session.
+func AuthRequired(c *gin.Context) {
+	session := sessions.Default(c)
+	user := session.Get(userKey)
+	if user == nil {
+		// Abort the request with the appropriate error code
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	// Continue down the chain to handler etc
+	c.Next()
+}
+
+// login is a handler that parses a form and checks for specific data.
+func login(c *gin.Context) {
+	session := sessions.Default(c)
+	username := c.PostForm("username")
+	password := c.PostForm("password")
+
+	// Validate form input
+	if strings.Trim(username, " ") == "" || strings.Trim(password, " ") == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Parameters can't be empty"})
+		return
+	}
+
+	// Retrieve user from the database based on the entered username
+	var user User
+	err := db.Get(&user, "SELECT * FROM users WHERE username = $1", username)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication failed"})
+		return
+	}
+
+	// Verify the entered password against the stored hash
+	if err := verifyPassword(user.PasswordHash, password); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication failed"})
+		return
+	}
+
+	// Save the username in the session
+	session.Set(userKey, username) // In real-world usage, you'd set this to the user's ID
+	if err := session.Save(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save session"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Successfully authenticated user"})
+}
+
+// logout is the handler called for the user to log out.
+func logout(c *gin.Context) {
+	session := sessions.Default(c)
+	user := session.Get(userKey)
+	if user == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid session token"})
+		return
+	}
+	session.Delete(userKey)
+	if err := session.Save(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save session"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Successfully logged out"})
+}
+
+// me is the handler that will return the user information stored in the session.
+func me(c *gin.Context) {
+	session := sessions.Default(c)
+	user := session.Get(userKey)
+	c.JSON(http.StatusOK, gin.H{"user": user})
+}
+
+// status is the handler that will tell the user whether it is logged in or not.
+func status(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "You are logged in"})
+}
+
+// Handler to get all feeds for a user
+// func getFeeds(c *gin.Context) {
+// 	user, err := getUserFromSession(c)
+// 	if err != nil {
+// 		// Handle error, e.g., user not logged in
+// 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+// 		return
+// 	}
+
+// 	// Retrieve all feeds associated with the user
+// 	var feeds []Feed
+// 	err = db.Select(&feeds, "SELECT * FROM feeds WHERE user_id = $1", user.ID)
+// 	if err != nil {
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve feeds from the database"})
+// 		return
+// 	}
+
+// 	c.JSON(http.StatusOK, gin.H{
+// 		"feeds": feeds,
+// 	})
+// }
+
+func addFeed(c *gin.Context) {
+	user, err := getUserFromSession(c)
+	if err != nil {
+		// Handle error, e.g., user not logged in
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	// Get the URL from the request body
+	var requestBody struct {
+		URL string `json:"url" binding:"required"`
+	}
+	if err := c.BindJSON(&requestBody); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Insert the URL into the `feeds` table associated with the user
+	_, err = db.Exec("INSERT INTO feeds (user_id, url) VALUES ($1, $2)", user.ID, requestBody.URL)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert URL into the database"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Feed URL added to the database!",
 	})
+}
 
-	r.POST("/feed/add", func(c *gin.Context) {
-		// Access environment variables
-		pgDatabase := os.Getenv("PGDATABASE")
-		pgHost := os.Getenv("PGHOST")
-		pgPassword := os.Getenv("PGPASSWORD")
-		pgPort := os.Getenv("PGPORT")
-		pgUser := os.Getenv("PGUSER")
+// Function to hash a password
+// func hashPassword(password string) (string, error) {
+// 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+// 	return string(hashedPassword), err
+// }
 
-		// Use these variables to construct a connection string
-		connectionString := fmt.Sprintf("user=%s password=%s host=%s port=%s dbname=%s", pgUser, pgPassword, pgHost, pgPort, pgDatabase)
+// Function to verify a password
+func verifyPassword(hashedPassword, password string) error {
+	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
+}
 
-		// Initialize a new database connection for this route (optional, depending on your needs)
-		db, err := sqlx.Connect("postgres", connectionString)
-		if err != nil {
-			c.JSON(500, gin.H{
-				"error": "Failed to connect to the database",
-			})
-			return
-		}
-		defer db.Close()
+// User represents the user entity in the database
+type User struct {
+	ID           int    `db:"id" json:"id"`
+	Username     string `db:"username" json:"username"`
+	PasswordHash string `db:"password_hash" json:"-"`
+}
 
-		// Get the URL from the request body
-		var requestBody struct {
-			URL string `json:"url" binding:"required"`
-		}
-		if err := c.BindJSON(&requestBody); err != nil {
-			c.JSON(400, gin.H{
-				"error": "Invalid request body",
-			})
-			return
-		}
+// Function to get user from session
+func getUserFromSession(c *gin.Context) (*User, error) {
+	session := sessions.Default(c)
+	username := session.Get(userKey)
+	if username == nil {
+		return nil, errors.New("user not logged in")
+	}
 
-		// Insert the URL into the `urls` table
-		_, err = db.Exec("INSERT INTO test (url) VALUES ($1)", requestBody.URL)
-		if err != nil {
-			c.JSON(500, gin.H{
-				"error": "Failed to insert URL into the database",
-			})
-			return
-		}
+	// Fetch user details from the database based on the username
+	var user User
+	err := db.Get(&user, "SELECT * FROM users WHERE username = $1", username)
+	if err != nil {
+		return nil, err
+	}
 
-		c.JSON(200, gin.H{
-			"message": "Feed URL added to the database!",
-		})
-	})
-
-	r.Run()
+	return &user, nil
 }

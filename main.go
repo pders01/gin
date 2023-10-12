@@ -25,6 +25,7 @@ var secret = []byte(os.Getenv("SESSION_SECRET"))
 func main() {
 	// Get environment variables
 	dbURL := os.Getenv("DATABASE_URL")
+	allowedOrigins := strings.Split(os.Getenv("ALLOWED_ORIGINS"), ",")
 
 	// Initialize the database connection
 	var err error
@@ -33,19 +34,22 @@ func main() {
 		panic(err)
 	}
 
-	r := engine()
+	r := engine(allowedOrigins)
 	r.Use(gin.Logger())
 	if err := r.Run(); err != nil {
 		log.Fatal("Unable to start:", err)
 	}
 }
 
-func engine() *gin.Engine {
+func engine(allowedOrigins []string) *gin.Engine {
 	r := gin.New()
 
 	// Setup the cookie store for session management
 	store := cookie.NewStore(secret)
 	r.Use(sessions.Sessions("mysession", store))
+
+	// CORS middleware
+	r.Use(corsMiddleware(allowedOrigins))
 
 	// Login and logout routes
 	r.POST("/login", login)
@@ -226,4 +230,29 @@ func getUserFromSession(c *gin.Context) (*User, error) {
 	}
 
 	return &user, nil
+}
+
+// corsMiddleware is a middleware to handle CORS.
+func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := c.Request.Header.Get("Origin")
+
+		// Check if the origin is in the list of allowed origins
+		for _, allowedOrigin := range allowedOrigins {
+			if allowedOrigin == "*" || allowedOrigin == origin {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+				c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+				if c.Request.Method == http.MethodOptions {
+					c.AbortWithStatus(http.StatusNoContent)
+					return
+				}
+
+				break
+			}
+		}
+
+		c.Next()
+	}
 }

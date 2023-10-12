@@ -36,7 +36,7 @@ func main() {
 
 	r := engine(allowedOrigins)
 	r.Use(gin.Logger())
-	if err := r.Run("::"); err != nil {
+	if err := r.Run(); err != nil {
 		log.Fatal("Unable to start:", err)
 	}
 }

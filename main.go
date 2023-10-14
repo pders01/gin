@@ -84,11 +84,10 @@ type User struct {
 	PasswordHash string `db:"password_hash" json:"-"`
 }
 
-// AuthRequired middleware checks for a valid JWT token
+// AuthRequired middleware checks for a valid JWT token in the Authorization header
 func AuthRequired(c *gin.Context) {
-	tokenString, err := c.Cookie("jwt_token")
-	if err != nil {
-		log.Println("Error getting JWT token from cookie:", err)
+	tokenString := extractJWTTokenFromHeader(c.Request.Header.Get("Authorization"))
+	if tokenString == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		c.Abort()
 		return
@@ -331,4 +330,20 @@ func validateJWTToken(tokenString string) (*jwt.Token, error) {
 		// Return the secret key used for signing
 		return []byte(jwtSecretKey), nil
 	})
+}
+
+// extractJWTTokenFromHeader extracts the JWT token from the Authorization header
+func extractJWTTokenFromHeader(authorizationHeader string) string {
+	// Check if the Authorization header is empty
+	if authorizationHeader == "" {
+		return ""
+	}
+
+	// Expecting a header value in the format "Bearer <token>"
+	parts := strings.Split(authorizationHeader, " ")
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		return ""
+	}
+
+	return parts[1]
 }

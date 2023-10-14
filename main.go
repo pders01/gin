@@ -166,25 +166,25 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Set the JWT token as a cookie
-	domain := os.Getenv("RAILWAY_PUBLIC_DOMAIN")
-
-	c.SetSameSite(http.SameSiteNoneMode)
-	c.SetCookie("jwt_token", tokenString, 0, "/", domain, false, true)
+	// Set the JWT token in the response JSON
+	c.JSON(http.StatusOK, gin.H{"token": tokenString})
 
 	// Save the username and session secret in the session
 	session.Set(userKey, username)
 	if err := session.Save(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save session"})
+		log.Println("Failed to save session:", err)
+	}
+}
+
+// logout clears the JWT token and invalidates the session
+func logout(c *gin.Context) {
+	session := sessions.Default(c)
+	session.Delete(userKey)
+	if err := session.Save(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to invalidate session"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Successfully authenticated user"})
-}
-
-// logout clears the JWT token cookie
-func logout(c *gin.Context) {
-	c.SetCookie("jwt_token", "", -1, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully logged out"})
 }
 

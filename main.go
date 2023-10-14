@@ -1,17 +1,15 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-contrib/sessions"
-	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
@@ -20,6 +18,7 @@ import (
 
 const userKey = "user"
 
+var jwtSecretKey = os.Getenv("JWT_SECRET")
 var Router *gin.Engine
 var db *sqlx.DB
 var sessionSecret string
@@ -36,12 +35,6 @@ func main() {
 		log.Fatal("Failed to connect to the database:", err)
 	}
 
-	// Generate a new session secret
-	sessionSecret, err = generateSessionSecret()
-	if err != nil {
-		log.Fatal("Failed to generate session secret:", err)
-	}
-
 	r := engine(allowedOrigins)
 	r.Use(gin.Logger())
 	if err := r.Run(); err != nil {
@@ -51,16 +44,6 @@ func main() {
 
 func engine(allowedOrigins []string) *gin.Engine {
 	r := gin.New()
-
-	// Setup the cookie store for session management
-	store := cookie.NewStore([]byte(sessionSecret))
-	store.Options(
-		sessions.Options{
-			MaxAge:   24 * 60 * 60,
-			HttpOnly: true,
-		},
-	)
-	r.Use(sessions.Sessions("mysession", store))
 
 	// CORS middleware
 	r.Use(corsMiddleware(allowedOrigins))
@@ -76,22 +59,64 @@ func engine(allowedOrigins []string) *gin.Engine {
 		private.GET("/me", me)
 		private.GET("/status", status)
 		//private.GET("/feeds", getFeeds)
-		private.POST("/feeds", addFeed)
+		//private.POST("/feeds", addFeed)
 	}
 
 	return r
 }
 
-// AuthRequired is a simple middleware to check the session.
+// User represents the user entity in the database
+type User struct {
+	ID           int    `db:"id" json:"id"`
+	Username     string `db:"username" json:"username"`
+	PasswordHash string `db:"password_hash" json:"-"`
+}
+
+// AuthRequired middleware checks for a valid JWT token
 func AuthRequired(c *gin.Context) {
-	session := sessions.Default(c)
-	user := session.Get(userKey)
-	if user == nil {
-		// Abort the request with the appropriate error code
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	tokenString, err := c.Cookie("jwt_token")
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		c.Abort()
 		return
 	}
-	// Continue down the chain to handler etc
+
+	token, err := validateJWTToken(tokenString)
+	if err != nil || !token.Valid {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		c.Abort()
+		return
+	}
+
+	// Extract claims
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		c.Abort()
+		return
+	}
+
+	// Extract user information from claims
+	username, ok := claims["username"].(string)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		c.Abort()
+		return
+	}
+
+	// Fetch user details from the database based on the username
+	var user User
+	err = db.Get(&user, "SELECT * FROM users WHERE username = $1", username)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		c.Abort()
+		return
+	}
+
+	// Set user information in the context for further use in handlers
+	c.Set("user", user)
+
+	// Continue down the chain to handler, etc.
 	c.Next()
 }
 
@@ -121,15 +146,15 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Generate a new session secret if not already set
-	if session.Get("session_secret") == nil {
-		newSecret, err := generateSessionSecret()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate session secret"})
-			return
-		}
-		session.Set("session_secret", newSecret)
+	// Assuming user is valid, create a JWT token
+	tokenString, err := createJWTToken(username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
 	}
+
+	// Set the JWT token as a cookie
+	c.SetCookie("jwt_token", tokenString, 0, "/", "", false, true)
 
 	// Save the username and session secret in the session
 	session.Set(userKey, username)
@@ -141,19 +166,9 @@ func login(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully authenticated user"})
 }
 
-// logout is the handler called for the user to log out.
+// logout clears the JWT token cookie
 func logout(c *gin.Context) {
-	session := sessions.Default(c)
-	user := session.Get(userKey)
-	if user == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid session token"})
-		return
-	}
-	session.Delete(userKey)
-	if err := session.Save(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save session"})
-		return
-	}
+	c.SetCookie("jwt_token", "", -1, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully logged out"})
 }
 
@@ -191,34 +206,34 @@ func status(c *gin.Context) {
 // 	})
 // }
 
-func addFeed(c *gin.Context) {
-	user, err := getUserFromSession(c)
-	if err != nil {
-		// Handle error, e.g., user not logged in
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
+// func addFeed(c *gin.Context) {
+// 	user, err := getUserFromSession(c)
+// 	if err != nil {
+// 		// Handle error, e.g., user not logged in
+// 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+// 		return
+// 	}
 
-	// Get the URL from the request body
-	var requestBody struct {
-		URL string `json:"url" binding:"required"`
-	}
-	if err := c.BindJSON(&requestBody); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
-		return
-	}
+// 	// Get the URL from the request body
+// 	var requestBody struct {
+// 		URL string `json:"url" binding:"required"`
+// 	}
+// 	if err := c.BindJSON(&requestBody); err != nil {
+// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+// 		return
+// 	}
 
-	// Insert the URL into the `feeds` table associated with the user
-	_, err = db.Exec("INSERT INTO feeds (user_id, url) VALUES ($1, $2)", user.ID, requestBody.URL)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert URL into the database"})
-		return
-	}
+// 	// Insert the URL into the `feeds` table associated with the user
+// 	_, err = db.Exec("INSERT INTO feeds (user_id, url) VALUES ($1, $2)", user.ID, requestBody.URL)
+// 	if err != nil {
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert URL into the database"})
+// 		return
+// 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Feed URL added to the database!",
-	})
-}
+// 	c.JSON(http.StatusOK, gin.H{
+// 		"message": "Feed URL added to the database!",
+// 	})
+// }
 
 // Function to hash a password
 // func hashPassword(password string) (string, error) {
@@ -229,31 +244,6 @@ func addFeed(c *gin.Context) {
 // Function to verify a password
 func verifyPassword(hashedPassword, password string) error {
 	return bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(password))
-}
-
-// User represents the user entity in the database
-type User struct {
-	ID           int    `db:"id" json:"id"`
-	Username     string `db:"username" json:"username"`
-	PasswordHash string `db:"password_hash" json:"-"`
-}
-
-// Function to get user from session
-func getUserFromSession(c *gin.Context) (*User, error) {
-	session := sessions.Default(c)
-	username := session.Get(userKey)
-	if username == nil {
-		return nil, errors.New("user not logged in")
-	}
-
-	// Fetch user details from the database based on the username
-	var user User
-	err := db.Get(&user, "SELECT * FROM users WHERE username = $1", username)
-	if err != nil {
-		return nil, err
-	}
-
-	return &user, nil
 }
 
 // corsMiddleware is a middleware to handle CORS.
@@ -282,12 +272,31 @@ func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
 	}
 }
 
-// generateSessionSecret generates a random session secret.
-func generateSessionSecret() (string, error) {
-	b := make([]byte, 32)
-	_, err := io.ReadFull(rand.Reader, b)
+// createJWTToken generates a JWT token for the given username
+func createJWTToken(username string) (string, error) {
+	claims := jwt.MapClaims{
+		"username": username,
+		"exp":      time.Now().Add(time.Hour * 24).Unix(), // Token expiration time (e.g., 24 hours)
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(jwtSecretKey))
 	if err != nil {
 		return "", err
 	}
-	return base64.URLEncoding.EncodeToString(b), nil
+
+	return tokenString, nil
+}
+
+// validateJWTToken validates a JWT token
+func validateJWTToken(tokenString string) (*jwt.Token, error) {
+	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// Check the signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
+
+		// Return the secret key used for signing
+		return []byte(jwtSecretKey), nil
+	})
 }

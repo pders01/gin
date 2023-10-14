@@ -168,7 +168,7 @@ func login(c *gin.Context) {
 
 	// Set the JWT token as a cookie
 	c.SetSameSite(http.SameSiteNoneMode)
-	c.SetCookie("jwt_token", tokenString, 0, "/", "", false, true)
+	c.SetCookie("jwt_token", tokenString, 0, "/", "localhost", false, true)
 
 	// Save the username and session secret in the session
 	session.Set(userKey, username)

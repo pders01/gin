@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,8 +22,7 @@ const userKey = "user"
 
 var Router *gin.Engine
 var db *sqlx.DB
-
-var secret = []byte(os.Getenv("SESSION_SECRET"))
+var sessionSecret string
 
 func main() {
 	// Get environment variables
@@ -31,7 +33,13 @@ func main() {
 	var err error
 	db, err = sqlx.Connect("postgres", dbURL)
 	if err != nil {
-		panic(err)
+		log.Fatal("Failed to connect to the database:", err)
+	}
+
+	// Generate a new session secret
+	sessionSecret, err = generateSessionSecret()
+	if err != nil {
+		log.Fatal("Failed to generate session secret:", err)
 	}
 
 	r := engine(allowedOrigins)
@@ -45,7 +53,13 @@ func engine(allowedOrigins []string) *gin.Engine {
 	r := gin.New()
 
 	// Setup the cookie store for session management
-	store := cookie.NewStore(secret)
+	store := cookie.NewStore([]byte(sessionSecret))
+	store.Options(
+		sessions.Options{
+			MaxAge:   24 * 60 * 60,
+			HttpOnly: true,
+		},
+	)
 	r.Use(sessions.Sessions("mysession", store))
 
 	// CORS middleware
@@ -107,8 +121,18 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Save the username in the session
-	session.Set(userKey, username) // In real-world usage, you'd set this to the user's ID
+	// Generate a new session secret if not already set
+	if session.Get("session_secret") == nil {
+		newSecret, err := generateSessionSecret()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate session secret"})
+			return
+		}
+		session.Set("session_secret", newSecret)
+	}
+
+	// Save the username and session secret in the session
+	session.Set(userKey, username)
 	if err := session.Save(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save session"})
 		return
@@ -255,4 +279,14 @@ func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// generateSessionSecret generates a random session secret.
+func generateSessionSecret() (string, error) {
+	b := make([]byte, 32)
+	_, err := io.ReadFull(rand.Reader, b)
+	if err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(b), nil
 }

@@ -87,8 +87,8 @@ type User struct {
 // AuthRequired middleware checks for a valid JWT token
 func AuthRequired(c *gin.Context) {
 	tokenString, err := c.Cookie("jwt_token")
-	log.Println("Error getting JWT token from cookie:", err)
 	if err != nil {
+		log.Println("Error getting JWT token from cookie:", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		c.Abort()
 		return

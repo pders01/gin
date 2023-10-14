@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-contrib/sessions"
+	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
@@ -21,7 +25,6 @@ const userKey = "user"
 var jwtSecretKey = os.Getenv("JWT_SECRET")
 var Router *gin.Engine
 var db *sqlx.DB
-var sessionSecret string
 
 func main() {
 	// Get environment variables
@@ -45,8 +48,17 @@ func main() {
 func engine(allowedOrigins []string) *gin.Engine {
 	r := gin.New()
 
+	sessionSecret, err := generateSessionSecret()
+	if err != nil {
+		log.Fatal("Failed to generate session secret:", err)
+	}
+
 	// CORS middleware
 	r.Use(corsMiddleware(allowedOrigins))
+
+	// Use sessions middleware
+	store := cookie.NewStore([]byte(sessionSecret))
+	r.Use(sessions.Sessions("mysession", store))
 
 	// Login and logout routes
 	r.POST("/login", login)
@@ -272,8 +284,24 @@ func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
 	}
 }
 
+// generateSessionSecret generates a random session secret.
+func generateSessionSecret() (string, error) {
+	b := make([]byte, 32)
+	_, err := io.ReadFull(rand.Reader, b)
+	if err != nil {
+		return "", err
+	}
+
+	return base64.URLEncoding.EncodeToString(b), nil
+}
+
 // createJWTToken generates a JWT token for the given username
 func createJWTToken(username string) (string, error) {
+	if jwtSecretKey == "" {
+		err := errors.New("jwt secret is missing")
+		return "", err
+	}
+
 	claims := jwt.MapClaims{
 		"username": username,
 		"exp":      time.Now().Add(time.Hour * 24).Unix(), // Token expiration time (e.g., 24 hours)

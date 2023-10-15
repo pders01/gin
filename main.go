@@ -165,14 +165,26 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Set the JWT token in the response JSON
-	c.JSON(http.StatusOK, gin.H{"token": tokenString})
-
-	// Save the username and session secret in the session
+	// Save the username in the session
 	session.Set(userKey, username)
 	if err := session.Save(); err != nil {
 		log.Println("Failed to save session:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save session"})
+		return
 	}
+
+	// Set the session cookie in the response
+	c.SetCookie(
+		"mysession",  // name of the cookie
+		session.ID(), // value of the cookie (session ID)
+		3600,         // max age in seconds (1 hour in this example)
+		"/",          // path
+		"",           // domain
+		true,         // secure (set to true if using HTTPS)
+		true,         // httpOnly (to prevent JavaScript access)
+	)
+	// Set the JWT token in the response JSON
+	c.JSON(http.StatusOK, gin.H{"token": tokenString})
 }
 
 // logout clears the JWT token and invalidates the session

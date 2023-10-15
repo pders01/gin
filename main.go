@@ -58,6 +58,13 @@ func engine(allowedOrigins []string) *gin.Engine {
 
 	// Use sessions middleware
 	store := cookie.NewStore([]byte(sessionSecret))
+	store.Options(sessions.Options{
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteNoneMode,
+		MaxAge:   8 * 60 * 60,
+	})
 	r.Use(sessions.Sessions("mysession", store))
 
 	// Login and logout routes

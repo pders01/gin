@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
+	"github.com/mmcdole/gofeed"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -235,8 +236,43 @@ func getFeeds(c *gin.Context) {
 		return
 	}
 
+	// Use gofeed.Parser to fetch and parse feed data
+	fp := gofeed.NewParser()
+
+	var enrichedFeeds []map[string]interface{}
+	for _, feedFromDB := range feeds {
+		// Fetch feed data from the URL
+		resp, fetchErr := http.Get(feedFromDB.URL)
+		if fetchErr != nil {
+			// Handle fetch error, e.g., log it
+			log.Println("Failed to fetch feed:", fetchErr)
+			continue
+		}
+		defer resp.Body.Close()
+
+		// Parse the feed data
+		parsedFeed, parseErr := fp.Parse(resp.Body)
+		if parseErr != nil {
+			// Handle parsing error, e.g., log it
+			log.Println("Failed to parse feed:", parseErr)
+			continue
+		}
+
+		// Create a new Feed object with enriched information
+		enrichedFeed := map[string]interface{}{
+			"ID":          feedFromDB.ID,
+			"UserID":      feedFromDB.UserID,
+			"URL":         feedFromDB.URL,
+			"Title":       parsedFeed.Title,
+			"Description": parsedFeed.Description,
+			"Items":       parsedFeed.Items,
+		}
+
+		enrichedFeeds = append(enrichedFeeds, enrichedFeed)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"feeds": feeds,
+		"feeds": enrichedFeeds,
 	})
 }
 

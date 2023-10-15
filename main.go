@@ -173,16 +173,9 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Set the session cookie in the response
-	c.SetCookie(
-		"mysession",  // name of the cookie
-		session.ID(), // value of the cookie (session ID)
-		3600,         // max age in seconds (1 hour in this example)
-		"/",          // path
-		"",           // domain
-		true,         // secure (set to true if using HTTPS)
-		true,         // httpOnly (to prevent JavaScript access)
-	)
+	// Set the SameSite attribute to None
+	c.SetSameSite(http.SameSiteNoneMode)
+
 	// Set the JWT token in the response JSON
 	c.JSON(http.StatusOK, gin.H{"token": tokenString})
 }

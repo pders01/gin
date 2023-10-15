@@ -56,10 +56,16 @@ func engine(allowedOrigins []string) *gin.Engine {
 	// CORS middleware
 	r.Use(corsMiddleware(allowedOrigins))
 
+	domain := os.Getenv("RAILWAY_PUBLIC_DOMAIN")
+	if domain == "" {
+		log.Fatal("Env var domain cannot be empty")
+	}
+
 	// Use sessions middleware
 	store := cookie.NewStore([]byte(sessionSecret))
 	store.Options(sessions.Options{
 		Path:     "/",
+		Domain:   domain,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteNoneMode,

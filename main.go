@@ -77,8 +77,8 @@ func engine(allowedOrigins []string) *gin.Engine {
 	{
 		private.GET("/me", me)
 		private.GET("/status", status)
-		//private.GET("/feeds", getFeeds)
-		//private.POST("/feeds", addFeed)
+		private.GET("/feeds", getFeeds)
+		private.POST("/feeds", addFeed)
 	}
 
 	return r
@@ -211,56 +211,63 @@ func status(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "You are logged in"})
 }
 
+// Feed represents the feed entity in the database
+type Feed struct {
+	ID     int    `db:"id" json:"id"`
+	UserID int    `db:"user_id" json:"user_id"`
+	URL    string `db:"url" json:"url"`
+}
+
 // Handler to get all feeds for a user
-// func getFeeds(c *gin.Context) {
-// 	user, err := getUserFromSession(c)
-// 	if err != nil {
-// 		// Handle error, e.g., user not logged in
-// 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-// 		return
-// 	}
+func getFeeds(c *gin.Context) {
+	user, err := getUserFromSession(c)
+	if err != nil {
+		// Handle error, e.g., user not logged in
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 
-// 	// Retrieve all feeds associated with the user
-// 	var feeds []Feed
-// 	err = db.Select(&feeds, "SELECT * FROM feeds WHERE user_id = $1", user.ID)
-// 	if err != nil {
-// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve feeds from the database"})
-// 		return
-// 	}
+	// Retrieve all feeds associated with the user
+	var feeds []Feed
+	err = db.Select(&feeds, "SELECT * FROM feeds WHERE user_id = $1", user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve feeds from the database"})
+		return
+	}
 
-// 	c.JSON(http.StatusOK, gin.H{
-// 		"feeds": feeds,
-// 	})
-// }
+	c.JSON(http.StatusOK, gin.H{
+		"feeds": feeds,
+	})
+}
 
-// func addFeed(c *gin.Context) {
-// 	user, err := getUserFromSession(c)
-// 	if err != nil {
-// 		// Handle error, e.g., user not logged in
-// 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-// 		return
-// 	}
+func addFeed(c *gin.Context) {
+	user, err := getUserFromSession(c)
+	if err != nil {
+		// Handle error, e.g., user not logged in
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 
-// 	// Get the URL from the request body
-// 	var requestBody struct {
-// 		URL string `json:"url" binding:"required"`
-// 	}
-// 	if err := c.BindJSON(&requestBody); err != nil {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
-// 		return
-// 	}
+	// Get the URL from the request body
+	var requestBody struct {
+		URL string `json:"url" binding:"required"`
+	}
+	if err := c.BindJSON(&requestBody); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
 
-// 	// Insert the URL into the `feeds` table associated with the user
-// 	_, err = db.Exec("INSERT INTO feeds (user_id, url) VALUES ($1, $2)", user.ID, requestBody.URL)
-// 	if err != nil {
-// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert URL into the database"})
-// 		return
-// 	}
+	// Insert the URL into the `feeds` table associated with the user
+	_, err = db.Exec("INSERT INTO feeds (user_id, url) VALUES ($1, $2)", user.ID, requestBody.URL)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert URL into the database"})
+		return
+	}
 
-// 	c.JSON(http.StatusOK, gin.H{
-// 		"message": "Feed URL added to the database!",
-// 	})
-// }
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Feed URL added to the database!",
+	})
+}
 
 // Function to hash a password
 // func hashPassword(password string) (string, error) {
@@ -358,4 +365,24 @@ func extractJWTTokenFromHeader(authorizationHeader string) string {
 	}
 
 	return parts[1]
+}
+
+// getUserFromSession retrieves the user from the session.
+func getUserFromSession(c *gin.Context) (User, error) {
+	session := sessions.Default(c)
+	username := session.Get(userKey)
+
+	// Check if username exists in the session
+	if username == nil {
+		return User{}, errors.New("username not found in session")
+	}
+
+	// Retrieve user details from the database based on the username
+	var user User
+	err := db.Get(&user, "SELECT * FROM users WHERE username = $1", username)
+	if err != nil {
+		return User{}, errors.New("failed to retrieve user from the database")
+	}
+
+	return user, nil
 }
